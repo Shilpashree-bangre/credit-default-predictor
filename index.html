@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Credit Card Default Predictor</title>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.27.3/full/pyodide.js"></script>
+<style>
+  :root { --bg:#f7f8fa; --card:#fff; --text:#1f2328; --muted:#5b6470; --border:#d8dde3;
+          --accent:#ea6a12; --bad:#c62828; --good:#2e7d32; --note:#fff7e6; --noteb:#f5c26b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181c; --card:#1f2228; --text:#e7e9ec; --muted:#a3abb5; --border:#363b44;
+            --accent:#ff8a3d; --bad:#ef5350; --good:#66bb6a; --note:#2e2614; --noteb:#7a5c1e; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { margin:0 0 6px; font-size:1.6rem; }
+  h2 { font-size:1.05rem; margin:18px 0 8px; }
+  p { margin:6px 0; color:var(--muted); }
+  .note { background:var(--note); border:1px solid var(--noteb); border-radius:8px; padding:10px 14px; margin:12px 0; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  label { display:flex; flex-direction:column; font-size:.85rem; color:var(--muted); gap:4px; }
+  input, select { font:inherit; padding:8px; border:1px solid var(--border); border-radius:6px;
+                  background:var(--bg); color:var(--text); }
+  .buttons { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
+  button { font:inherit; font-weight:600; border:0; border-radius:8px; padding:12px 18px; cursor:pointer; }
+  #predict { background:var(--accent); color:#fff; flex:1; }
+  .secondary { background:var(--border); color:var(--text); }
+  button:disabled { opacity:.5; cursor:wait; }
+  #status { font-weight:600; }
+  #result { margin-top:16px; display:none; }
+  .bar { height:14px; background:var(--border); border-radius:7px; overflow:hidden; margin:8px 0; }
+  .fill { height:100%; background:var(--accent); width:0; transition:width .4s; }
+  .big { font-size:1.4rem; font-weight:700; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Credit Card Default Predictor</h1>
+  <p>Tuned random forest trained on the UCI <em>Default of Credit Card Clients</em> dataset
+     (Taiwan, 2005). Amounts are in New Taiwan dollars. For coursework demonstration only,
+     not for real lending decisions.</p>
+  <div class="note">This page runs Python and scikit-learn inside your browser (Pyodide) on a free
+     Static Space, and trains the model when it loads. <span id="status">Starting…</span></div>
+  <p id="metrics"></p>
+
+  <div class="card">
+    <h2>Client profile</h2>
+    <div class="grid" id="profile"></div>
+    <h2>Repayment status (most recent month first)</h2>
+    <div class="grid" id="paystatus"></div>
+    <h2>Bill statement amounts</h2>
+    <div class="grid" id="bills"></div>
+    <h2>Amounts paid</h2>
+    <div class="grid" id="paid"></div>
+    <div class="buttons">
+      <button id="predict" disabled>Predict</button>
+      <button class="secondary" id="lowrisk">Low-risk example</button>
+      <button class="secondary" id="highrisk">High-risk example</button>
+    </div>
+    <div id="result">
+      <div class="big" id="decision"></div>
+      <div class="bar"><div class="fill" id="fill"></div></div>
+      <p id="detail"></p>
+    </div>
+  </div>
+</main>
+
+<script>
+const MONTHS = ["Sep", "Aug", "Jul", "Jun", "May", "Apr"];
+const PAY_KEYS = ["PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6"];
+const PAY_STATUS = [["Paid in full / no use (-2)", -2], ["Paid duly (-1)", -1], ["Revolving credit (0)", 0],
+  ["1 month late", 1], ["2 months late", 2], ["3 months late", 3], ["4 months late", 4],
+  ["5 months late", 5], ["6 months late", 6], ["7 months late", 7], ["8+ months late", 8]];
+
+function numberField(parent, key, label, value) {
+  parent.insertAdjacentHTML("beforeend",
+    `<label>${label}<input type="number" id="${key}" value="${value}"></label>`);
+}
+function selectField(parent, key, label, options, value) {
+  const opts = options.map(([t, v]) => `<option value="${v}" ${v === value ? "selected" : ""}>${t}</option>`).join("");
+  parent.insertAdjacentHTML("beforeend", `<label>${label}<select id="${key}">${opts}</select></label>`);
+}
+
+const profile = document.getElementById("profile");
+numberField(profile, "LIMIT_BAL", "Credit limit", 50000);
+selectField(profile, "SEX", "Sex", [["Male", 1], ["Female", 2]], 2);
+selectField(profile, "EDUCATION", "Education",
+  [["Graduate school", 1], ["University", 2], ["High school", 3], ["Other", 4]], 2);
+selectField(profile, "MARRIAGE", "Marital status", [["Married", 1], ["Single", 2], ["Other", 3]], 2);
+numberField(profile, "AGE", "Age", 35);
+MONTHS.forEach((m, i) => {
+  selectField(document.getElementById("paystatus"), PAY_KEYS[i], m, PAY_STATUS, 0);
+  numberField(document.getElementById("bills"), `BILL_AMT${i + 1}`, m, 20000);
+  numberField(document.getElementById("paid"), `PAY_AMT${i + 1}`, m, 2000);
+});
+
+function setExample(late, paidRecent) {
+  PAY_KEYS.forEach((k, i) => document.getElementById(k).value = i < 2 ? late : 0);
+  ["PAY_AMT1", "PAY_AMT2"].forEach(k => document.getElementById(k).value = paidRecent);
+}
+document.getElementById("lowrisk").onclick = () => setExample(0, 2000);
+document.getElementById("highrisk").onclick = () => setExample(2, 0);
+
+const statusEl = document.getElementById("status");
+const predictBtn = document.getElementById("predict");
+let pyodide;
+
+async function start() {
+  try {
+    statusEl.textContent = "Loading Python…";
+    pyodide = await loadPyodide();
+    statusEl.textContent = "Loading scikit-learn and pandas…";
+    await pyodide.loadPackage(["numpy", "pandas", "scikit-learn"]);
+    statusEl.textContent = "Downloading model code and data…";
+    const [code, csv] = await Promise.all([
+      fetch("model.py").then(r => { if (!r.ok) throw new Error("model.py not found"); return r.text(); }),
+      fetch("data/default_of_credit_card_clients.csv").then(r => { if (!r.ok) throw new Error("dataset not found"); return r.text(); }),
+    ]);
+    // Use absolute paths: Pyodide's file helpers treat relative folders inconsistently.
+    const home = pyodide.runPython("import os; os.getcwd()");
+    pyodide.FS.mkdirTree(home + "/data");
+    pyodide.FS.writeFile(home + "/model.py", code);
+    pyodide.FS.writeFile(home + "/default_of_credit_card_clients.csv", csv);
+    pyodide.FS.writeFile(home + "/data/default_of_credit_card_clients.csv", csv);
+    statusEl.textContent = "Training the model (this can take up to a minute)…";
+    await new Promise(r => setTimeout(r, 50));  // let the message appear before training
+    const metrics = JSON.parse(pyodide.runPython(`
+import os, sys, json
+sys.path.insert(0, os.getcwd())
+import model
+MODEL, METRICS = model.build()
+json.dumps(METRICS)
+`));
+    document.getElementById("metrics").textContent =
+      `Test set (${metrics.n_test.toLocaleString()} clients): accuracy ${(metrics.accuracy * 100).toFixed(1)}%, ` +
+      `precision ${metrics.precision.toFixed(3)}, recall ${metrics.recall.toFixed(3)}, ` +
+      `F1 ${metrics.f1.toFixed(3)}, ROC-AUC ${metrics.roc_auc.toFixed(3)}`;
+    statusEl.textContent = "Ready.";
+    predictBtn.disabled = false;
+  } catch (err) {
+    const msg = (err && (err.message || (err.errno !== undefined ? "file system error " + err.errno : String(err)))) || "unknown";
+    statusEl.textContent = "Error: " + msg + " (press F12 and check the Console for details)";
+    console.error(err);
+  }
+}
+
+predictBtn.onclick = () => {
+  const keys = ["LIMIT_BAL", "SEX", "EDUCATION", "MARRIAGE", "AGE", ...PAY_KEYS,
+    ...MONTHS.map((_, i) => `BILL_AMT${i + 1}`), ...MONTHS.map((_, i) => `PAY_AMT${i + 1}`)];
+  const values = {};
+  for (const k of keys) {
+    const v = Number(document.getElementById(k).value);
+    if (Number.isNaN(v)) { alert(`Please enter a number for ${k}`); return; }
+    values[k] = v;
+  }
+  const p = pyodide.runPython(
+    `import json; model.predict_one(MODEL, json.loads(${JSON.stringify(JSON.stringify(values))}))`);
+  const isDefault = p >= 0.5;
+  const decision = document.getElementById("decision");
+  decision.textContent = isDefault ? "Likely to DEFAULT" : "Unlikely to default";
+  decision.style.color = isDefault ? "var(--bad)" : "var(--good)";
+  document.getElementById("fill").style.width = (p * 100).toFixed(1) + "%";
+  document.getElementById("detail").textContent =
+    `Predicted probability of default: ${(p * 100).toFixed(1)}% (decision threshold 50%). ` +
+    "Probabilities are inflated by class weighting, so read them as a risk ranking rather than a calibrated chance.";
+  document.getElementById("result").style.display = "block";
+};
+
+start();
+</script>
+</body>
+</html>

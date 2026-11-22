@@ -1,0 +1,4 @@
+gradio
+scikit-learn>=1.5
+pandas>=2.0
+numpy

@@ -1,0 +1,52 @@
+name: CI/CD - test and deploy to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  HF_USERNAME: Sbangre       
+  HF_SPACE: credit-default-predictor   
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run tests (includes the model quality gate)
+        run: pytest -v
+
+  check-file-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if any file is over 10 MB (Spaces reject larger files without Git LFS)
+        run: |
+          big=$(find . -path ./.git -prune -o -type f -size +10M -print)
+          if [ -n "$big" ]; then echo "Files over 10 MB:"; echo "$big"; exit 1; fi
+
+  deploy:
+    needs: [test, check-file-size]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git push --force \
+            https://$HF_USERNAME:$HF_TOKEN@huggingface.co/spaces/$HF_USERNAME/$HF_SPACE \
+            HEAD:main
