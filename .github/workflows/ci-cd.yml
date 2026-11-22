@@ -9,7 +9,7 @@ on:
 
 env:
   HF_USERNAME: Sbangre       
-  HF_SPACE: credit-default-predictor   
+  HF_SPACE: credit-default-static   
 
 jobs:
   test:
